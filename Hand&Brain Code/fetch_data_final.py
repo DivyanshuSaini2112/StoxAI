@@ -10,65 +10,150 @@ from matplotlib.ticker import FuncFormatter
 import matplotlib
 import matplotlib.font_manager as fm
 from matplotlib.patches import FancyBboxPatch
+import time
+import requests
+from datetime import datetime, timedelta
+
+# Global cache
+_data_cache = {}
+_last_request_time = 0
+MIN_REQUEST_INTERVAL = 1
 
 def setup_fonts():
     """Set up font handling for better emoji support"""
     try:
-        # Get all available font families
         available_fonts = set(f.name for f in fm.fontManager.ttflist)
-        # Preferred fonts that might support emojis
         preferred_fonts = ['Noto Sans', 'Segoe UI Emoji', 'DejaVu Sans', 'Arial Unicode MS', 'Arial']
         
         for font in preferred_fonts:
             if font in available_fonts:
                 matplotlib.rcParams['font.family'] = font
-                print(f"Using font: {font}")
                 return
-        # If none found, use the system default sans-serif
         matplotlib.rcParams['font.family'] = 'sans-serif'
-        print("Warning: No preferred emoji-supporting font found. Falling back to sans-serif.")
     except Exception as e:
         matplotlib.rcParams['font.family'] = 'sans-serif'
-        print(f"Font setup error: {e}. Falling back to sans-serif.")
 
-def fetch_stock_data(ticker, period='6mo', interval='1d'):
-    """Fetch historical price data using yfinance"""
+def fetch_from_alphavantage(ticker, api_key='demo'):
+    """
+    Fetch data from Alpha Vantage (Free tier: 25 requests/day)
+    Get free API key from: https://www.alphavantage.co/support/#api-key
+    """
     try:
-        stock = yf.Ticker(ticker)
-        data = stock.history(period=period, interval=interval)
-        if data.empty:
-            return None, None
-        return data, stock.info
+        print(f"🔄 Trying Alpha Vantage API...")
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&outputsize=full&apikey={api_key}'
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if 'Time Series (Daily)' in data:
+            df = pd.DataFrame.from_dict(data['Time Series (Daily)'], orient='index')
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            df = df.astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+            
+            # Get last 6 months
+            six_months_ago = datetime.now() - timedelta(days=180)
+            df = df[df.index >= six_months_ago]
+            
+            if len(df) > 0:
+                print(f"✓ Data fetched from Alpha Vantage")
+                return df, {'longName': ticker, 'symbol': ticker}
+        return None, None
     except Exception as e:
-        print(f"Error fetching price data: {e}")
+        print(f"⚠️  Alpha Vantage error: {e}")
         return None, None
 
-def fetch_sector_pe(ticker_info):
-    """Attempt to fetch industry PE ratio"""
+def fetch_from_yahoo_simple(ticker):
+    """Simplified Yahoo Finance fetch without yfinance library"""
     try:
-        sector = ticker_info.get('sector', '')
-        if sector:
-            sector_tickers = {
-                'Technology': ['INFY.NS', 'TCS.NS', 'WIPRO.NS', 'HCLTECH.NS'],
-                'Consumer Cyclical': ['JUBLFOOD.NS', 'DMART.NS', 'TITAN.NS'],
-                'Financial Services': ['HDFCBANK.NS', 'SBIN.NS', 'ICICIBANK.NS'],
-                'Healthcare': ['SUNPHARMA.NS', 'DRREDDY.NS', 'CIPLA.NS'],
-                'Energy': ['RELIANCE.NS', 'ONGC.NS', 'IOC.NS']
-            }
-            if sector in sector_tickers:
-                pes = []
-                for sector_ticker in sector_tickers[sector]:
-                    try:
-                        info = yf.Ticker(sector_ticker).info
-                        if 'trailingPE' in info and info['trailingPE'] is not None:
-                            pes.append(info['trailingPE'])
-                    except:
-                        continue
-                if pes:
-                    return np.median(pes)
-        return None
-    except:
-        return None
+        print(f"🔄 Trying direct Yahoo Finance API...")
+        
+        # Calculate timestamps
+        end_time = int(time.time())
+        start_time = end_time - (180 * 24 * 60 * 60)  # 6 months ago
+        
+        url = f"https://query1.finance.yahoo.com/v7/finance/download/{ticker}?period1={start_time}&period2={end_time}&interval=1d&events=history"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            from io import StringIO
+            df = pd.read_csv(StringIO(response.text))
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            
+            if len(df) > 0:
+                print(f"✓ Data fetched from Yahoo Finance (direct)")
+                return df, {'longName': ticker, 'symbol': ticker}
+        return None, None
+    except Exception as e:
+        print(f"⚠️  Direct Yahoo error: {e}")
+        return None, None
+
+def fetch_from_yfinance(ticker, period='6mo'):
+    """Try standard yfinance with increased timeout"""
+    try:
+        print(f"🔄 Trying yfinance library...")
+        time.sleep(3)  # Wait before attempting
+        
+        stock = yf.Ticker(ticker)
+        data = stock.history(period=period, interval='1d', timeout=15)
+        
+        if not data.empty:
+            info = {}
+            try:
+                info = stock.info
+            except:
+                info = {'longName': ticker, 'symbol': ticker}
+            
+            print(f"✓ Data fetched from yfinance")
+            return data, info
+        return None, None
+    except Exception as e:
+        print(f"⚠️  yfinance error: {e}")
+        return None, None
+
+def fetch_stock_data(ticker, period='6mo', use_alphavantage=False, alphavantage_key='demo'):
+    """
+    Fetch data with multiple fallback sources
+    Priority: yfinance -> direct Yahoo -> Alpha Vantage
+    """
+    cache_key = f"{ticker}_{period}"
+    
+    # Check cache
+    if cache_key in _data_cache:
+        cache_time, cached_data, cached_info = _data_cache[cache_key]
+        if time.time() - cache_time < 600:  # 10 minute cache
+            print(f"📦 Using cached data for {ticker}")
+            return cached_data, cached_info
+    
+    data, info = None, None
+    
+    # Method 1: Try yfinance (most reliable when not rate-limited)
+    data, info = fetch_from_yfinance(ticker, period)
+    
+    # Method 2: Try direct Yahoo Finance API
+    if data is None or data.empty:
+        time.sleep(2)
+        data, info = fetch_from_yahoo_simple(ticker)
+    
+    # Method 3: Try Alpha Vantage (requires API key)
+    if (data is None or data.empty) and use_alphavantage:
+        time.sleep(2)
+        data, info = fetch_from_alphavantage(ticker, alphavantage_key)
+    
+    # Cache successful result
+    if data is not None and not data.empty:
+        _data_cache[cache_key] = (time.time(), data, info)
+        return data, info
+    
+    return None, None
 
 def create_technical_features(df):
     """Add technical indicators to the dataframe"""
@@ -163,7 +248,7 @@ def create_fancy_table(ax, data, title, cmap=None):
     return table
 
 def create_signal_panel(fig, signals, pos):
-    """Create an attractive technical signals panel with fallback for missing glyphs"""
+    """Create an attractive technical signals panel"""
     signal_box = fig.add_axes(pos)
     signal_box.axis('off')
     
@@ -177,44 +262,22 @@ def create_signal_panel(fig, signals, pos):
                   ha="center", va="top", fontsize=12, fontweight='bold',
                   transform=signal_box.transAxes)
     
-    # Simplistic check: Assume emoji support if using known emoji-supporting fonts
-    current_font = matplotlib.rcParams['font.family'][0].lower()
-    emoji_fonts = {'noto sans', 'segoe ui emoji', 'dejavu sans'}
-    supports_emojis = current_font in emoji_fonts
-    
     for i, signal in enumerate(signals):
         y_pos = 0.85 - (i * 0.15)
-        if supports_emojis:
-            if "Overbought" in signal:
-                icon, color = "⚠️ ", 'darkorange'
-            elif "Oversold" in signal:
-                icon, color = "✅ ", 'green'
-            elif "Bullish" in signal:
-                icon, color = "📈 ", 'green'
-            elif "Bearish" in signal:
-                icon, color = "📉 ", 'crimson'
-            elif ">" in signal:
-                icon, color = "↗️ ", 'green'
-            elif "<" in signal:
-                icon, color = "↘️ ", 'crimson'
-            else:
-                icon, color = "⚖️ ", 'darkblue'
+        if "Overbought" in signal:
+            icon, color = "! ", 'darkorange'
+        elif "Oversold" in signal:
+            icon, color = "✓ ", 'green'
+        elif "Bullish" in signal:
+            icon, color = "^ ", 'green'
+        elif "Bearish" in signal:
+            icon, color = "v ", 'crimson'
+        elif ">" in signal:
+            icon, color = "> ", 'green'
+        elif "<" in signal:
+            icon, color = "< ", 'crimson'
         else:
-            # Fallback to simple ASCII symbols
-            if "Overbought" in signal:
-                icon, color = "! ", 'darkorange'
-            elif "Oversold" in signal:
-                icon, color = "✓ ", 'green'
-            elif "Bullish" in signal:
-                icon, color = "^ ", 'green'
-            elif "Bearish" in signal:
-                icon, color = "v ", 'crimson'
-            elif ">" in signal:
-                icon, color = "> ", 'green'
-            elif "<" in signal:
-                icon, color = "< ", 'crimson'
-            else:
-                icon, color = "= ", 'darkblue'
+            icon, color = "= ", 'darkblue'
         
         signal_box.text(0.1, y_pos, icon, fontsize=12, ha="center", va="center", 
                       transform=signal_box.transAxes)
@@ -223,7 +286,7 @@ def create_signal_panel(fig, signals, pos):
     return signal_box
 
 def visualize_stock_data(df, info, ticker):
-    """Create a comprehensive visualization of stock data with modern styling and improved spacing"""
+    """Create a comprehensive visualization of stock data"""
     setup_fonts()
     plt.style.use('seaborn-v0_8-darkgrid')
     plt.rcParams['figure.facecolor'] = '#f8f9fa'
@@ -244,26 +307,23 @@ def visualize_stock_data(df, info, ticker):
         'bollinger': '#7f7f7f'
     }
     
-    # Increase figure size for better spacing
-    fig = plt.figure(figsize=(18, 12))  # Increased size for more breathing room
-    plt.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.06, hspace=0.35, wspace=0.3)  # More spacing
+    fig = plt.figure(figsize=(18, 12))
+    plt.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.06, hspace=0.35, wspace=0.3)
     
-    gs = GridSpec(7, 6, figure=fig)  # Added an extra row for better distribution
+    gs = GridSpec(7, 6, figure=fig)
     
     currency = "₹" if ticker.endswith('.NS') or ticker.endswith('.BO') else "$"
     company_name = info.get('longName', ticker)
     
-    # Title with reduced font size and better positioning
     title_ax = fig.add_subplot(gs[0, :])
     title_ax.axis('off')
     title_ax.text(0.5, 0.7, f"{company_name} ({ticker})", 
-                  fontsize=18, fontweight='bold', ha='center', va='center')  # Reduced font size
+                  fontsize=18, fontweight='bold', ha='center', va='center')
     current_price = df['Close'].iloc[-1]
     last_date = df.index[-1].strftime('%d %b %Y')
     price_text = f"Current Price: {currency}{current_price:.2f} | Last Updated: {last_date}"
-    title_ax.text(0.5, 0.3, price_text, fontsize=10, ha='center', va='center')  # Reduced font size
+    title_ax.text(0.5, 0.3, price_text, fontsize=10, ha='center', va='center')
     
-    # Price chart with more space
     ax_price = fig.add_subplot(gs[1:3, :4])
     ax_price.plot(df.index, df['Close'], color=colors['price'], linewidth=2, label='Close Price')
     ax_price.fill_between(df.index, df['Close'].min()*0.95, df['Close'], 
@@ -280,11 +340,10 @@ def visualize_stock_data(df, info, ticker):
                          color=colors['bollinger'], alpha=0.1)
     add_panel_styling(ax_price, "Price Chart")
     ax_price.set_ylabel('Price', fontsize=10)
-    ax_price.legend(loc='upper left', fontsize=8, frameon=True, framealpha=0.7)  # Reduced font size
+    ax_price.legend(loc='upper left', fontsize=8, frameon=True, framealpha=0.7)
     ax_price.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
     ax_price.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
     
-    # Volume chart
     ax_volume = fig.add_subplot(gs[3, :4], sharex=ax_price)
     volume_bars = ax_volume.bar(df.index, df['Volume'], color=colors['volume'], 
                               alpha=0.7, width=0.8)
@@ -298,7 +357,6 @@ def visualize_stock_data(df, info, ticker):
     ax_volume.yaxis.set_major_formatter(FuncFormatter(millions_formatter))
     ax_volume.tick_params(axis='x', labelbottom=False)
     
-    # RSI chart
     ax_rsi = fig.add_subplot(gs[4, :2], sharex=ax_price)
     ax_rsi.plot(df.index, df['RSI'], color=colors['rsi'], linewidth=1.5)
     ax_rsi.axhline(70, color=colors['rsi_overbought'], linestyle='--', alpha=0.5)
@@ -311,7 +369,6 @@ def visualize_stock_data(df, info, ticker):
     ax_rsi.set_ylabel('RSI', fontsize=10)
     ax_rsi.set_ylim(0, 100)
     
-    # MACD chart
     ax_macd = fig.add_subplot(gs[4, 2:4], sharex=ax_price)
     ax_macd.plot(df.index, df['MACD'], color=colors['macd'], linewidth=1.5, label='MACD')
     ax_macd.plot(df.index, df['MACD_Signal'], color=colors['signal'], 
@@ -326,10 +383,8 @@ def visualize_stock_data(df, info, ticker):
                           color=colors['histogram_down'], alpha=0.5, width=0.8)
     add_panel_styling(ax_macd, "MACD")
     ax_macd.set_ylabel('MACD', fontsize=10)
-    ax_macd.legend(loc='upper left', fontsize=8, frameon=True, framealpha=0.7)  # Reduced font size
+    ax_macd.legend(loc='upper left', fontsize=8, frameon=True, framealpha=0.7)
     
-    # Fetch industry PE and prepare metrics tables (unchanged structure, just smaller fonts)
-    industry_pe = fetch_sector_pe(info)
     pe_ratio = info.get('trailingPE', None)
     pb_ratio = info.get('priceToBook', None)
     
@@ -352,7 +407,6 @@ def visualize_stock_data(df, info, ticker):
         ["Market Cap", format_currency(info.get('marketCap'), currency)],
         ["P/E Ratio", f"{pe_ratio:.2f}" if pe_ratio and not np.isnan(pe_ratio) else 'N/A'],
         ["P/B Ratio", f"{pb_ratio:.2f}" if pb_ratio and not np.isnan(pb_ratio) else 'N/A'],
-        ["Industry P/E", f"{industry_pe:.2f}" if industry_pe else 'N/A'],
     ]
     
     performance_metrics = [
@@ -363,7 +417,6 @@ def visualize_stock_data(df, info, ticker):
         ["Volatility", format_percentage(df['Volatility_20d'].iloc[-1])],
     ]
     
-    # Tables with reduced font sizes and adjusted positioning
     price_table_ax = fig.add_subplot(gs[1, 4:])
     create_fancy_table(price_table_ax, price_metrics, "Price Summary")
     
@@ -377,7 +430,6 @@ def visualize_stock_data(df, info, ticker):
     create_fancy_table(performance_table_ax, performance_metrics, 
                       "Performance Summary", cmap='RdYlGn')
     
-    # Technical signals panel with more space and smaller font
     rsi = df['RSI'].iloc[-1]
     macd = df['MACD'].iloc[-1]
     macd_signal = df['MACD_Signal'].iloc[-1]
@@ -408,57 +460,82 @@ def visualize_stock_data(df, info, ticker):
     else:
         signals.append("Price within Bollinger Bands")
     
-    # Increase the height of the signal panel and reduce font sizes
-    create_signal_panel(fig, signals, [0.07, 0.05, 0.86, 0.18])  # Increased height (0.18 instead of 0.15)
+    create_signal_panel(fig, signals, [0.07, 0.05, 0.86, 0.18])
     
-    # Footer with smaller font and better positioning
-    footer_ax = fig.add_axes([0, 0, 1, 0.02])  # Reduced height
+    footer_ax = fig.add_axes([0, 0, 1, 0.02])
     footer_ax.axis('off')
     footer_ax.text(0.5, 0.5, 
                    "Disclaimer: This analysis is for informational purposes only. Not financial advice.",
-                   ha="center", va="center", fontsize=7, style='italic', alpha=0.7)  # Reduced font size
+                   ha="center", va="center", fontsize=7, style='italic', alpha=0.7)
     
     return fig
 
-def analyze_stock(ticker_symbol):
+def analyze_stock(ticker_symbol, use_alphavantage=False, alphavantage_key='demo'):
+    print(f"\n{'='*60}")
     print(f"Analyzing {ticker_symbol}...")
+    print(f"{'='*60}")
     
-    if not (ticker_symbol.endswith('.NS') or ticker_symbol.endswith('.BO')) and ticker_symbol not in ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'TSLA', 'META', 'NFLX']:
-        ticker_ns = f"{ticker_symbol}.NS"
-        data_ns, info_ns = fetch_stock_data(ticker_ns)
+    tried_tickers = []
+    data = None
+    info = None
+    ticker_to_use = None
+    
+    # Try with .NS suffix for Indian stocks
+    if not (ticker_symbol.endswith('.NS') or ticker_symbol.endswith('.BO')):
+        us_stocks = ['AAPL', 'MSFT', 'GOOG', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NFLX', 'NVDA', 'AMD']
         
-        if data_ns is None or data_ns.empty:
-            ticker_bo = f"{ticker_symbol}.BO"
-            data_bo, info_bo = fetch_stock_data(ticker_bo)
+        if ticker_symbol.upper() not in us_stocks:
+            ticker_ns = f"{ticker_symbol}.NS"
+            data_ns, info_ns = fetch_stock_data(ticker_ns, use_alphavantage=use_alphavantage, alphavantage_key=alphavantage_key)
+            tried_tickers.append(ticker_ns)
             
-            if data_bo is None or data_bo.empty:
-                data, info = fetch_stock_data(ticker_symbol)
-                if data is None or data.empty:
-                    print(f"Could not fetch data for {ticker_symbol}. Please check the ticker symbol.")
-                    return None
-                ticker_to_use = ticker_symbol
+            if data_ns is not None and not data_ns.empty:
+                data = data_ns
+                info = info_ns
+                ticker_to_use = ticker_ns
+                print(f"✓ Found on NSE: {ticker_ns}")
             else:
-                data = data_bo
-                info = info_bo
-                ticker_to_use = ticker_bo
-        else:
-            data = data_ns
-            info = info_ns
-            ticker_to_use = ticker_ns
-    else:
-        data, info = fetch_stock_data(ticker_symbol)
+                ticker_bo = f"{ticker_symbol}.BO"
+                data_bo, info_bo = fetch_stock_data(ticker_bo, use_alphavantage=use_alphavantage, alphavantage_key=alphavantage_key)
+                tried_tickers.append(ticker_bo)
+                
+                if data_bo is not None and not data_bo.empty:
+                    data = data_bo
+                    info = info_bo
+                    ticker_to_use = ticker_bo
+                    print(f"✓ Found on BSE: {ticker_bo}")
+        
         if data is None or data.empty:
-            print(f"Could not fetch data for {ticker_symbol}. Please check the ticker symbol.")
-            return None
-        ticker_to_use = ticker_symbol
+            data_raw, info_raw = fetch_stock_data(ticker_symbol, use_alphavantage=use_alphavantage, alphavantage_key=alphavantage_key)
+            tried_tickers.append(ticker_symbol)
+            if data_raw is not None and not data_raw.empty:
+                data = data_raw
+                info = info_raw
+                ticker_to_use = ticker_symbol
+                print(f"✓ Found: {ticker_symbol}")
+    else:
+        data, info = fetch_stock_data(ticker_symbol, use_alphavantage=use_alphavantage, alphavantage_key=alphavantage_key)
+        tried_tickers.append(ticker_symbol)
+        if data is not None and not data.empty:
+            ticker_to_use = ticker_symbol
+            print(f"✓ Found: {ticker_symbol}")
     
-    if len(data) < 20:
-        print(f"Not enough historical data for {ticker_to_use}.")
+    if data is None or data.empty:
+        print(f"\n❌ Could not fetch data for any of these tickers: {', '.join(tried_tickers)}")
+        print("\n💡 Solutions:")
+        print("   1. Yahoo Finance is rate-limiting you. Wait 10-15 minutes")
+        print("   2. Use Alpha Vantage API (free 25 requests/day)")
+        print("      - Get API key: https://www.alphavantage.co/support/#api-key")
+        print("      - Run with: analyze_stock('DLF', use_alphavantage=True, alphavantage_key='YOUR_KEY')")
+        print("   3. Try a different ticker to test if the issue is ticker-specific")
         return None
     
-    print(f"✓ Successfully fetched 6 months of data for {ticker_to_use}")
+    if len(data) < 20:
+        print(f"❌ Not enough historical data for {ticker_to_use}.")
+        return None
+    
+    print(f"✓ Successfully fetched {len(data)} days of data for {ticker_to_use}")
     print("📊 Calculating technical indicators...")
-    print("  ↳ Adding technical features")
     data_with_features = create_technical_features(data)
     print("✓ Technical indicators complete")
     
@@ -466,11 +543,11 @@ def analyze_stock(ticker_symbol):
     current_price = data['Close'].iloc[-1]
     company_name = info.get('longName', ticker_to_use)
     
-    print(f"\n===== {company_name} ({ticker_to_use}) =====")
+    print(f"\n{'='*60}")
+    print(f"{company_name} ({ticker_to_use})")
+    print(f"{'='*60}")
     print(f"💰 Current Price: {currency}{current_price:.2f}")
     print(f"📈 Day Range: {currency}{data['Low'].iloc[-1]:.2f} - {currency}{data['High'].iloc[-1]:.2f}")
-    
-    industry_pe = fetch_sector_pe(info)
     
     if info:
         if 'marketCap' in info and info['marketCap']:
@@ -483,8 +560,6 @@ def analyze_stock(ticker_symbol):
             print(f"📊 P/E Ratio: {info['trailingPE']:.2f}")
         if 'priceToBook' in info and info['priceToBook']:
             print(f"📚 P/B Ratio: {info['priceToBook']:.2f}")
-        if industry_pe:
-            print(f"📉 Industry P/E: {industry_pe:.2f}")
     
     print("\n🎨 Creating visualization dashboard...")
     fig = visualize_stock_data(data_with_features, info, ticker_to_use)
@@ -501,34 +576,80 @@ def analyze_stock(ticker_symbol):
     
     return result
 
+def clear_cache():
+    """Clear the data cache"""
+    global _data_cache
+    _data_cache.clear()
+    print("✓ Cache cleared")
+
 if __name__ == "__main__":
-    print("Stock Analysis Tool - Enter 'quit' to exit")
+    print("="*60)
+    print("      📈 STOCK ANALYSIS TOOL 📊")
+    print("="*60)
+    print("\n🔑 Optional: Get free Alpha Vantage API key for backup data source")
+    print("   Visit: https://www.alphavantage.co/support/#api-key")
+    print("="*60)
+    print("\nCommands:")
+    print("  - Enter ticker symbol to analyze (e.g., DLF, RELIANCE, AAPL)")
+    print("  - Type 'clear' to clear cache")
+    print("  - Type 'quit' to exit")
+    print("="*60)
+    
+    # Ask if user has Alpha Vantage key (optional)
+    use_av = input("\n➤ Do you have an Alpha Vantage API key? (y/n, default: n): ").strip().lower()
+    av_key = 'demo'
+    use_alphavantage = False
+    
+    if use_av == 'y':
+        av_key = input("➤ Enter your Alpha Vantage API key: ").strip()
+        if av_key:
+            use_alphavantage = True
+            print("✓ Alpha Vantage enabled as backup data source")
+    
     while True:
         try:
-            ticker_symbol = input("\nEnter stock ticker symbol: ").strip().upper()
+            ticker_symbol = input("\n➤ Enter stock ticker symbol: ").strip().upper()
             
             if ticker_symbol.lower() == 'quit':
-                print("Exiting program.")
+                print("\n👋 Exiting program. Thank you!")
                 break
             
-            if not ticker_symbol:
-                print("Please enter a valid ticker symbol.")
+            if ticker_symbol.lower() == 'clear':
+                clear_cache()
                 continue
             
-            result = analyze_stock(ticker_symbol)
+            if not ticker_symbol:
+                print("⚠️  Please enter a valid ticker symbol.")
+                continue
+            
+            result = analyze_stock(ticker_symbol, use_alphavantage=use_alphavantage, alphavantage_key=av_key)
             
             if result:
+                print(f"\n{'='*60}")
+                print("📊 Displaying chart...")
+                print(f"{'='*60}")
+                
                 plt.figure(result['figure'].number)
                 plt.show()
-                result['figure'].savefig(f"{result['ticker']}_analysis.png", 
-                                       dpi=300, bbox_inches='tight')
-                print(f"Analysis chart saved as {result['ticker']}_analysis.png")
+                
+                # Save the figure
+                filename = f"{result['ticker']}_analysis.png"
+                result['figure'].savefig(filename, dpi=300, bbox_inches='tight')
+                print(f"\n✓ Analysis chart saved as: {filename}")
+                
+                # Close the figure to free memory
+                plt.close(result['figure'])
             else:
-                print("Analysis failed. Please check the ticker symbol or try again.")
+                print("\n❌ Analysis failed.")
+                print("\n💡 Quick fixes:")
+                print("   1. Wait 10-15 minutes if you see rate limit errors")
+                print("   2. Try 'clear' command to clear cache")
+                print("   3. Get Alpha Vantage API key for alternative data source")
+                print("   4. Try US stocks like AAPL, MSFT if Indian stocks fail")
                 
         except KeyboardInterrupt:
-            print("\nProgram terminated by user.")
+            print("\n\n👋 Program terminated by user.")
             break
         except Exception as e:
-            print(f"An error occurred: {e}")
-            print("Please try again.")
+            print(f"\n❌ An error occurred: {e}")
+            print("Please try again or type 'quit' to exit.")
