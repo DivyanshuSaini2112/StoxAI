@@ -15,12 +15,78 @@ import dash_bootstrap_components as dbc
 # ==================== DATA FETCHING ====================
 
 _data_cache = {}
+ALPHAVANTAGE_API_KEY = 'MQT91HLMWHASIDR2'  # Replace with your key from https://www.alphavantage.co/support/#api-key
+
+def fetch_from_alphavantage(ticker):
+    """Fetch data from Alpha Vantage (Backup source)"""
+    try:
+        print(f"🔄 Trying Alpha Vantage API for {ticker}...")
+        # Remove exchange suffixes for Alpha Vantage
+        clean_ticker = ticker.replace('.NS', '').replace('.BO', '')
+        
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={clean_ticker}&outputsize=full&apikey={ALPHAVANTAGE_API_KEY}'
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if 'Time Series (Daily)' in data:
+            df = pd.DataFrame.from_dict(data['Time Series (Daily)'], orient='index')
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            df = df.astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+            
+            # Get last 6 months
+            six_months_ago = datetime.now() - timedelta(days=180)
+            df = df[df.index >= six_months_ago]
+            
+            if len(df) > 0:
+                print(f"✓ Data fetched from Alpha Vantage")
+                return df, {'longName': ticker, 'symbol': ticker}
+        elif 'Note' in data:
+            print(f"⚠️ Alpha Vantage API limit reached")
+        return None, None
+    except Exception as e:
+        print(f"⚠️ Alpha Vantage error: {e}")
+        return None, None
+
+def fetch_from_yahoo_simple(ticker):
+    """Direct Yahoo Finance API (Backup method)"""
+    try:
+        print(f"🔄 Trying direct Yahoo Finance API for {ticker}...")
+        
+        # Calculate timestamps
+        end_time = int(time.time())
+        start_time = end_time - (180 * 24 * 60 * 60)  # 6 months ago
+        
+        url = f"https://query1.finance.yahoo.com/v7/finance/download/{ticker}?period1={start_time}&period2={end_time}&interval=1d&events=history"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            from io import StringIO
+            df = pd.read_csv(StringIO(response.text))
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            
+            if len(df) > 0:
+                print(f"✓ Data fetched from Yahoo Finance (direct)")
+                return df, {'longName': ticker, 'symbol': ticker}
+        return None, None
+    except Exception as e:
+        print(f"⚠️ Direct Yahoo error: {e}")
+        return None, None
 
 def fetch_from_yfinance(ticker, period='6mo'):
     """Fetch data from yfinance"""
     try:
-        print(f"Fetching {ticker} from yfinance...")
-        time.sleep(1)
+        print(f"🔄 Trying yfinance for {ticker}...")
+        time.sleep(2)
         stock = yf.Ticker(ticker)
         data = stock.history(period=period, interval='1d', timeout=15)
         
@@ -30,24 +96,40 @@ def fetch_from_yfinance(ticker, period='6mo'):
                 info = stock.info
             except:
                 info = {'longName': ticker, 'symbol': ticker}
+            print(f"✓ Data fetched from yfinance")
             return data, info
         return None, None
     except Exception as e:
-        print(f"yfinance error: {e}")
+        print(f"⚠️ yfinance error: {e}")
         return None, None
 
 def fetch_stock_data(ticker, period='6mo'):
-    """Fetch stock data with caching"""
+    """Fetch stock data with multiple fallback sources"""
     cache_key = f"{ticker}_{period}"
     
+    # Check cache first
     if cache_key in _data_cache:
         cache_time, cached_data, cached_info = _data_cache[cache_key]
-        if time.time() - cache_time < 600:
-            print(f"Using cached data for {ticker}")
+        if time.time() - cache_time < 600:  # 10 minute cache
+            print(f"📦 Using cached data for {ticker}")
             return cached_data, cached_info
     
+    data, info = None, None
+    
+    # Method 1: Try yfinance (Primary)
     data, info = fetch_from_yfinance(ticker, period)
     
+    # Method 2: Try direct Yahoo Finance API
+    if data is None or data.empty:
+        time.sleep(2)
+        data, info = fetch_from_yahoo_simple(ticker)
+    
+    # Method 3: Try Alpha Vantage (Backup)
+    if data is None or data.empty:
+        time.sleep(2)
+        data, info = fetch_from_alphavantage(ticker)
+    
+    # Cache successful result
     if data is not None and not data.empty:
         _data_cache[cache_key] = (time.time(), data, info)
         return data, info
@@ -61,6 +143,8 @@ def create_technical_features(df):
     data['MA20'] = data['Close'].rolling(window=20).mean()
     data['MA50'] = data['Close'].rolling(window=50).mean()
     data['Daily_Return'] = data['Close'].pct_change()
+    data['Weekly_Return'] = data['Close'].pct_change(5)
+    data['Monthly_Return'] = data['Close'].pct_change(20)
     data['Volatility_20d'] = data['Daily_Return'].rolling(window=20).std()
     data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
     
@@ -72,6 +156,7 @@ def create_technical_features(df):
     bollinger = ta.volatility.BollingerBands(data['Close'])
     data['Bollinger_Upper'] = bollinger.bollinger_hband()
     data['Bollinger_Lower'] = bollinger.bollinger_lband()
+    data['Bollinger_Middle'] = bollinger.bollinger_mavg()
     
     return data
 
@@ -132,227 +217,506 @@ def analyze_stock(ticker_symbol):
 # ==================== PLOTLY VISUALIZATION ====================
 
 def create_plotly_dashboard(result):
-    """Create interactive Plotly dashboard"""
+    """Create interactive Plotly dashboard with modern design"""
     df = result['data']
     info = result['info']
     ticker = result['ticker']
     
     currency = "₹" if ticker.endswith('.NS') or ticker.endswith('.BO') else "$"
-    company_name = info.get('longName', ticker)
+    
+    # Color scheme
+    colors = {
+        'primary': '#667eea',
+        'secondary': '#764ba2',
+        'success': '#10b981',
+        'danger': '#ef4444',
+        'warning': '#f59e0b',
+        'info': '#3b82f6',
+        'dark': '#1f2937',
+        'light': '#f9fafb',
+        'grid': '#e5e7eb'
+    }
     
     # Create subplots
     fig = make_subplots(
         rows=4, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.05,
+        vertical_spacing=0.03,
         row_heights=[0.5, 0.2, 0.15, 0.15],
-        subplot_titles=('Price Chart with Bollinger Bands', 'Volume', 'RSI', 'MACD')
+        specs=[[{"secondary_y": False}],
+               [{"secondary_y": False}],
+               [{"secondary_y": False}],
+               [{"secondary_y": False}]]
     )
     
-    # Price chart with Bollinger Bands
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df['Close'],
-        name='Close Price',
-        line=dict(color='#2E86DE', width=2),
-        fill='tozeroy',
-        fillcolor='rgba(46, 134, 222, 0.1)'
+    # Price chart with Bollinger Bands (Candlestick)
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name='Price',
+        increasing_line_color=colors['success'],
+        decreasing_line_color=colors['danger'],
+        increasing_fillcolor=colors['success'],
+        decreasing_fillcolor=colors['danger']
     ), row=1, col=1)
     
+    # Moving averages with gradient effect
     fig.add_trace(go.Scatter(
         x=df.index, y=df['MA20'],
         name='MA20',
-        line=dict(color='#FF6B6B', width=1.5, dash='dash')
+        line=dict(color=colors['info'], width=2),
+        opacity=0.8
     ), row=1, col=1)
     
     fig.add_trace(go.Scatter(
         x=df.index, y=df['MA50'],
         name='MA50',
-        line=dict(color='#4ECDC4', width=1.5, dash='dash')
+        line=dict(color=colors['warning'], width=2),
+        opacity=0.8
     ), row=1, col=1)
     
+    # Bollinger Bands
     fig.add_trace(go.Scatter(
         x=df.index, y=df['Bollinger_Upper'],
         name='BB Upper',
-        line=dict(color='rgba(128,128,128,0.3)', width=1),
-        showlegend=False
+        line=dict(color=colors['grid'], width=1, dash='dot'),
+        showlegend=False,
+        opacity=0.5
     ), row=1, col=1)
     
     fig.add_trace(go.Scatter(
         x=df.index, y=df['Bollinger_Lower'],
         name='BB Lower',
-        line=dict(color='rgba(128,128,128,0.3)', width=1),
+        line=dict(color=colors['grid'], width=1, dash='dot'),
         fill='tonexty',
-        fillcolor='rgba(128,128,128,0.1)',
-        showlegend=False
+        fillcolor='rgba(102, 126, 234, 0.05)',
+        showlegend=False,
+        opacity=0.5
     ), row=1, col=1)
     
-    # Volume bars
-    colors = ['#26DE81' if df['Close'].iloc[i] > df['Close'].iloc[i-1] else '#FC5C65' 
-              for i in range(1, len(df))]
-    colors.insert(0, '#26DE81')
+    # Volume bars with gradient colors
+    volume_colors = [colors['success'] if df['Close'].iloc[i] >= df['Open'].iloc[i] 
+                     else colors['danger'] for i in range(len(df))]
     
     fig.add_trace(go.Bar(
         x=df.index, y=df['Volume'],
         name='Volume',
-        marker_color=colors,
-        showlegend=False
+        marker=dict(
+            color=volume_colors,
+            line=dict(width=0)
+        ),
+        showlegend=False,
+        opacity=0.7
     ), row=2, col=1)
     
-    # RSI
+    # RSI with zones
     fig.add_trace(go.Scatter(
         x=df.index, y=df['RSI'],
         name='RSI',
-        line=dict(color='#A55EEA', width=2)
+        line=dict(color=colors['primary'], width=2.5),
+        fill='tozeroy',
+        fillcolor='rgba(102, 126, 234, 0.1)'
     ), row=3, col=1)
     
-    fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
+    # RSI zones
+    fig.add_hrect(y0=70, y1=100, fillcolor=colors['danger'], opacity=0.1, 
+                  line_width=0, row=3, col=1)
+    fig.add_hrect(y0=0, y1=30, fillcolor=colors['success'], opacity=0.1, 
+                  line_width=0, row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color=colors['danger'], 
+                  opacity=0.5, line_width=1, row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color=colors['success'], 
+                  opacity=0.5, line_width=1, row=3, col=1)
     
-    # MACD
+    # MACD with histogram
     fig.add_trace(go.Scatter(
         x=df.index, y=df['MACD'],
         name='MACD',
-        line=dict(color='#2E86DE', width=2)
+        line=dict(color=colors['primary'], width=2)
     ), row=4, col=1)
     
     fig.add_trace(go.Scatter(
         x=df.index, y=df['MACD_Signal'],
         name='Signal',
-        line=dict(color='#FC5C65', width=2)
+        line=dict(color=colors['danger'], width=2)
     ), row=4, col=1)
     
-    colors_hist = ['#26DE81' if val > 0 else '#FC5C65' for val in df['MACD_Histogram']]
+    histogram_colors = [colors['success'] if val > 0 else colors['danger'] 
+                        for val in df['MACD_Histogram']]
     fig.add_trace(go.Bar(
         x=df.index, y=df['MACD_Histogram'],
         name='Histogram',
-        marker_color=colors_hist,
-        showlegend=False
+        marker=dict(color=histogram_colors, line=dict(width=0)),
+        showlegend=False,
+        opacity=0.6
     ), row=4, col=1)
     
-    # Update layout
+    # Update layout with modern styling
     fig.update_layout(
-        title=dict(
-            text=f"{company_name} ({ticker})<br><sub>Last Updated: {df.index[-1].strftime('%d %b %Y')}</sub>",
-            x=0.5,
-            xanchor='center',
-            font=dict(size=24, color='#2C3E50')
-        ),
         height=900,
         hovermode='x unified',
-        template='plotly_white',
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', 
+                  size=12, color=colors['dark']),
         showlegend=True,
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
+            y=1.01,
+            xanchor="left",
+            x=0,
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor=colors['grid'],
+            borderwidth=1,
+            font=dict(size=11)
         ),
-        margin=dict(l=60, r=40, t=100, b=40)
+        margin=dict(l=70, r=30, t=40, b=40),
+        xaxis4=dict(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor=colors['grid'],
+            showline=True,
+            linewidth=1,
+            linecolor=colors['grid']
+        )
     )
     
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(0,0,0,0.05)')
+    # Update all axes
+    for i in range(1, 5):
+        fig.update_xaxes(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor=colors['grid'],
+            showline=True,
+            linewidth=1,
+            linecolor=colors['grid'],
+            row=i, col=1
+        )
+        fig.update_yaxes(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor=colors['grid'],
+            showline=True,
+            linewidth=1,
+            linecolor=colors['grid'],
+            row=i, col=1
+        )
     
     return fig
 
+def get_signal_badge(rsi, macd, macd_signal, price, ma50):
+    """Generate trading signals with colors"""
+    signals = []
+    
+    if rsi > 70:
+        signals.append(('Overbought', 'danger', '⚠️'))
+    elif rsi < 30:
+        signals.append(('Oversold', 'success', '✓'))
+    else:
+        signals.append(('Neutral RSI', 'secondary', '●'))
+    
+    if macd > macd_signal:
+        signals.append(('Bullish MACD', 'success', '↑'))
+    else:
+        signals.append(('Bearish MACD', 'danger', '↓'))
+    
+    if price > ma50:
+        signals.append(('Above MA50', 'success', '↑'))
+    else:
+        signals.append(('Below MA50', 'danger', '↓'))
+    
+    return signals
+
 # ==================== DASH APP ====================
 
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+# Custom CSS
+custom_css = '''
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-app.layout = dbc.Container([
-    dbc.Row([
-        dbc.Col([
-            html.Div([
-                html.H1("📈 Stock Analysis Dashboard", className="text-center mb-4", 
-                       style={'color': '#2C3E50', 'fontWeight': '700'}),
-                html.P("Real-time stock analysis with technical indicators", 
-                      className="text-center text-muted mb-4")
-            ])
-        ])
-    ]),
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    margin: 0;
+    padding: 0;
+}
+
+.main-container {
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+    margin: 20px;
+    padding: 0;
+    overflow: hidden;
+}
+
+.hero-section {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 60px 40px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.hero-section::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: url('data:image/svg+xml,<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
+    opacity: 0.5;
+}
+
+.hero-title {
+    font-size: 3rem;
+    font-weight: 700;
+    margin: 0 0 10px 0;
+    position: relative;
+    z-index: 1;
+    letter-spacing: -1px;
+}
+
+.hero-subtitle {
+    font-size: 1.2rem;
+    opacity: 0.95;
+    font-weight: 300;
+    position: relative;
+    z-index: 1;
+}
+
+.search-section {
+    padding: 40px;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.stat-card {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    border: 1px solid #e5e7eb;
+    transition: all 0.3s ease;
+    height: 100%;
+}
+
+.stat-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 24px rgba(0,0,0,0.08);
+    border-color: #667eea;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: #6b7280;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.signal-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin: 4px;
+}
+
+.chart-container {
+    padding: 30px 40px;
+    background: white;
+}
+
+.info-section {
+    padding: 30px 40px;
+    background: #f9fafb;
+    border-top: 1px solid #e5e7eb;
+}
+
+.custom-input {
+    border-radius: 8px !important;
+    border: 2px solid #e5e7eb !important;
+    font-size: 1.1rem !important;
+    padding: 14px 20px !important;
+    transition: all 0.3s ease !important;
+}
+
+.custom-input:focus {
+    border-color: #667eea !important;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+}
+
+.custom-button {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    padding: 14px 32px !important;
+    font-size: 1.1rem !important;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    border: none !important;
+    transition: all 0.3s ease !important;
+}
+
+.custom-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3) !important;
+}
+
+.footer {
+    text-align: center;
+    padding: 30px;
+    color: #6b7280;
+    font-size: 0.875rem;
+    background: white;
+    border-top: 1px solid #e5e7eb;
+}
+'''
+
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+    ]
+)
+
+app.title = "StockVision Analytics"
+
+# Inject custom CSS
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+''' + custom_css + '''
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
+app.layout = html.Div([
     
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.Label("Enter Stock Symbol:", className="fw-bold mb-2"),
+    dbc.Container([
+        # Hero Section
+        html.Div([
+            html.H1("📈 StockVision Analytics", className="hero-title"),
+            html.P("Advanced Technical Analysis & Real-time Market Intelligence", 
+                   className="hero-subtitle")
+        ], className="hero-section"),
+        
+        # Search Section
+        html.Div([
+            dbc.Row([
+                dbc.Col([
                     dbc.InputGroup([
                         dbc.Input(
                             id='ticker-input',
-                            placeholder='e.g., RELIANCE, AAPL, TSLA',
+                            placeholder='Enter stock symbol (e.g., RELIANCE, AAPL, TSLA)',
                             type='text',
-                            className='form-control-lg'
+                            className='custom-input',
+                            style={'borderRight': 'none'}
                         ),
                         dbc.Button(
-                            '🔍 Analyze',
+                            [html.I(className="fas fa-search me-2"), "Analyze"],
                             id='analyze-button',
-                            color='primary',
-                            className='px-4',
+                            className='custom-button',
                             n_clicks=0
                         )
-                    ]),
-                    html.Small("For Indian stocks: RELIANCE, TCS, INFY | US stocks: AAPL, TSLA, MSFT", 
-                              className="text-muted mt-2 d-block")
-                ])
-            ], className="shadow-sm mb-4")
-        ], width=12)
-    ]),
-    
-    dbc.Row([
-        dbc.Col([
-            dcc.Loading(
-                id="loading",
-                type="circle",
-                children=[
-                    html.Div(id='error-message'),
-                    html.Div(id='stats-cards'),
-                    dcc.Graph(id='stock-chart', config={'displayModeBar': True})
-                ]
-            )
-        ])
-    ])
-], fluid=True, style={'backgroundColor': '#F8F9FA', 'minHeight': '100vh', 'padding': '20px'})
+                    ], className="mb-3"),
+                    html.Div([
+                        dbc.Badge("Indian Stocks", color="light", text_color="dark", className="me-2"),
+                        html.Small("RELIANCE • TCS • INFY • HDFCBANK", className="text-muted me-3"),
+                        dbc.Badge("US Stocks", color="light", text_color="dark", className="me-2"),
+                        html.Small("AAPL • TSLA • MSFT • GOOGL", className="text-muted")
+                    ])
+                ], width=12)
+            ])
+        ], className="search-section"),
+        
+        # Loading and Error Messages
+        dcc.Loading(
+            id="loading",
+            type="circle",
+            color="#667eea",
+            children=[
+                html.Div(id='error-message'),
+                
+                # Stats Cards Section
+                html.Div(id='stats-section'),
+                
+                # Chart Section
+                html.Div(id='chart-section'),
+                
+                # Signals Section
+                html.Div(id='signals-section'),
+            ]
+        ),
+        
+        # Footer
+        html.Div([
+            html.P([
+                "⚠️ Disclaimer: This platform is for informational and educational purposes only. ",
+                html.Strong("Not financial advice."),
+                " Always consult with a qualified financial advisor before making investment decisions."
+            ], className="mb-2"),
+            html.P([
+                "Powered by ",
+                html.Strong("StockVision Analytics"),
+                " • Real-time data via Yahoo Finance"
+            ], className="mb-0", style={'fontSize': '0.8rem', 'opacity': '0.7'})
+        ], className="footer")
+        
+    ], fluid=True, className="main-container", style={'maxWidth': '1400px', 'margin': '20px auto'})
+], style={'background': 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 'minHeight': '100vh', 'padding': '0'})
 
 @app.callback(
-    [Output('stock-chart', 'figure'),
-     Output('stats-cards', 'children'),
+    [Output('stats-section', 'children'),
+     Output('chart-section', 'children'),
+     Output('signals-section', 'children'),
      Output('error-message', 'children')],
     [Input('analyze-button', 'n_clicks')],
     [State('ticker-input', 'value')]
 )
 def update_dashboard(n_clicks, ticker):
     if n_clicks == 0 or not ticker:
-        # Default empty state
-        fig = go.Figure()
-        fig.update_layout(
-            title="Enter a stock ticker to begin analysis",
-            template='plotly_white',
-            height=600
-        )
-        return fig, None, None
+        return None, None, None, None
     
     ticker = ticker.strip().upper()
     result = analyze_stock(ticker)
     
     if result is None:
-        fig = go.Figure()
-        fig.update_layout(
-            title="Unable to fetch data",
-            template='plotly_white',
-            height=600
-        )
-        error = dbc.Alert(
-            "❌ Could not fetch data for this ticker. Please try another symbol.",
-            color="danger",
-            className="mb-3"
-        )
-        return fig, None, error
+        error = dbc.Alert([
+            html.I(className="fas fa-exclamation-circle me-2"),
+            "Unable to fetch data for this ticker. Please verify the symbol and try again."
+        ], color="danger", className="m-4")
+        return None, None, None, error
     
-    # Create chart
-    fig = create_plotly_dashboard(result)
-    
-    # Create stats cards
+    # Extract data
     df = result['data']
     info = result['info']
     ticker = result['ticker']
@@ -360,56 +724,115 @@ def update_dashboard(n_clicks, ticker):
     
     current_price = df['Close'].iloc[-1]
     daily_change = df['Daily_Return'].iloc[-1] * 100
+    weekly_change = df['Weekly_Return'].iloc[-1] * 100 if not pd.isna(df['Weekly_Return'].iloc[-1]) else 0
+    monthly_change = df['Monthly_Return'].iloc[-1] * 100 if not pd.isna(df['Monthly_Return'].iloc[-1]) else 0
     rsi = df['RSI'].iloc[-1]
+    volume = df['Volume'].iloc[-1]
     
-    stats = dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H6("Current Price", className="text-muted mb-2"),
-                    html.H3(f"{currency}{current_price:.2f}", className="mb-0 fw-bold")
-                ])
-            ], className="shadow-sm text-center")
-        ], width=3),
+    # Stats Cards
+    stats = html.Div([
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Div("Current Price", className="stat-label"),
+                    html.H2(f"{currency}{current_price:.2f}", className="stat-value", 
+                           style={'color': '#667eea'})
+                ], className="stat-card")
+            ], width=12, lg=3, className="mb-3"),
+            
+            dbc.Col([
+                html.Div([
+                    html.Div("Daily Change", className="stat-label"),
+                    html.H2(f"{daily_change:+.2f}%", className="stat-value",
+                           style={'color': '#10b981' if daily_change > 0 else '#ef4444'})
+                ], className="stat-card")
+            ], width=12, lg=3, className="mb-3"),
+            
+            dbc.Col([
+                html.Div([
+                    html.Div("RSI (14)", className="stat-label"),
+                    html.H2(f"{rsi:.1f}", className="stat-value",
+                           style={'color': '#ef4444' if rsi > 70 else '#10b981' if rsi < 30 else '#667eea'})
+                ], className="stat-card")
+            ], width=12, lg=3, className="mb-3"),
+            
+            dbc.Col([
+                html.Div([
+                    html.Div("Volume", className="stat-label"),
+                    html.H2(f"{volume/1e6:.1f}M", className="stat-value",
+                           style={'color': '#667eea'})
+                ], className="stat-card")
+            ], width=12, lg=3, className="mb-3"),
+        ], className="mb-3"),
         
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H6("Daily Change", className="text-muted mb-2"),
-                    html.H3(
-                        f"{daily_change:+.2f}%",
-                        className="mb-0 fw-bold",
-                        style={'color': '#26DE81' if daily_change > 0 else '#FC5C65'}
-                    )
-                ])
-            ], className="shadow-sm text-center")
-        ], width=3),
-        
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H6("RSI", className="text-muted mb-2"),
-                    html.H3(f"{rsi:.1f}", className="mb-0 fw-bold",
-                           style={'color': '#FC5C65' if rsi > 70 else '#26DE81' if rsi < 30 else '#2C3E50'})
-                ])
-            ], className="shadow-sm text-center")
-        ], width=3),
-        
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H6("Volume", className="text-muted mb-2"),
-                    html.H3(f"{df['Volume'].iloc[-1]/1e6:.1f}M", className="mb-0 fw-bold")
-                ])
-            ], className="shadow-sm text-center")
-        ], width=3),
-    ], className="mb-4")
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Div("Weekly Change", className="stat-label"),
+                    html.H4(f"{weekly_change:+.2f}%", 
+                           style={'color': '#10b981' if weekly_change > 0 else '#ef4444', 'margin': '0'})
+                ], className="stat-card")
+            ], width=12, lg=4, className="mb-3"),
+            
+            dbc.Col([
+                html.Div([
+                    html.Div("Monthly Change", className="stat-label"),
+                    html.H4(f"{monthly_change:+.2f}%",
+                           style={'color': '#10b981' if monthly_change > 0 else '#ef4444', 'margin': '0'})
+                ], className="stat-card")
+            ], width=12, lg=4, className="mb-3"),
+            
+            dbc.Col([
+                html.Div([
+                    html.Div("Market Cap", className="stat-label"),
+                    html.H4(f"{currency}{info.get('marketCap', 0)/1e9:.2f}B" if info.get('marketCap') else "N/A",
+                           style={'color': '#667eea', 'margin': '0'})
+                ], className="stat-card")
+            ], width=12, lg=4, className="mb-3"),
+        ])
+    ], style={'padding': '30px 40px'})
     
-    return fig, stats, None
+    # Chart
+    fig = create_plotly_dashboard(result)
+    chart = html.Div([
+        dcc.Graph(
+            figure=fig,
+            config={
+                'displayModeBar': True,
+                'displaylogo': False,
+                'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+            }
+        )
+    ], className="chart-container")
+    
+    # Trading Signals
+    signals = get_signal_badge(
+        rsi, 
+        df['MACD'].iloc[-1], 
+        df['MACD_Signal'].iloc[-1],
+        current_price,
+        df['MA50'].iloc[-1]
+    )
+    
+    signal_badges = []
+    for signal_text, signal_color, icon in signals:
+        signal_badges.append(
+            dbc.Badge([
+                html.Span(icon, style={'marginRight': '8px'}),
+                signal_text
+            ], color=signal_color, className="signal-badge")
+        )
+    
+    signals_section = html.Div([
+        html.H4("📊 Technical Signals", className="mb-3", style={'color': '#1f2937'}),
+        html.Div(signal_badges, className="d-flex flex-wrap")
+    ], className="info-section")
+    
+    return stats, chart, signals_section, None
 
 if __name__ == '__main__':
     print("="*60)
-    print("🚀 Starting Stock Analysis Web Dashboard...")
+    print("🚀 Starting StockVision Analytics Dashboard...")
     print("="*60)
     print("\n📊 Open your browser and go to: http://127.0.0.1:8050")
     print("="*60)
