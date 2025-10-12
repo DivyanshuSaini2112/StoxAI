@@ -15,7 +15,7 @@ import dash_bootstrap_components as dbc
 # ==================== DATA FETCHING ====================
 
 _data_cache = {}
-ALPHAVANTAGE_API_KEY = '38I9ZAQQOGR3LAL7'  # Replace with your key from https://www.alphavantage.co/support/#api-key
+ALPHAVANTAGE_API_KEY = 'MQT91HLMWHASIDR2'  # Replace with your key from https://www.alphavantage.co/support/#api-key
 
 def fetch_from_alphavantage(ticker):
     """Fetch data from Alpha Vantage (Backup source)"""
@@ -25,7 +25,7 @@ def fetch_from_alphavantage(ticker):
         clean_ticker = ticker.replace('.NS', '').replace('.BO', '')
         
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={clean_ticker}&outputsize=full&apikey={ALPHAVANTAGE_API_KEY}'
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         data = response.json()
         
         if 'Time Series (Daily)' in data:
@@ -40,20 +40,24 @@ def fetch_from_alphavantage(ticker):
             six_months_ago = datetime.now() - timedelta(days=180)
             df = df[df.index >= six_months_ago]
             
-            if len(df) > 0:
-                print(f"✓ Data fetched from Alpha Vantage")
-                return df, {'longName': ticker, 'symbol': ticker}
+            if len(df) > 10:
+                print(f"✓ Data fetched from Alpha Vantage ({len(df)} days)")
+                return df, {'longName': clean_ticker, 'symbol': ticker}
         elif 'Note' in data:
-            print(f"⚠️ Alpha Vantage API limit reached")
+            print(f"⚠️ Alpha Vantage: {data['Note'][:80]}")
+        elif 'Information' in data:
+            print(f"⚠️ Alpha Vantage: {data['Information'][:80]}")
+        else:
+            print(f"⚠️ Alpha Vantage: No data returned for {clean_ticker}")
         return None, None
     except Exception as e:
-        print(f"⚠️ Alpha Vantage error: {e}")
+        print(f"⚠️ Alpha Vantage error: {str(e)[:100]}")
         return None, None
 
 def fetch_from_yahoo_simple(ticker):
     """Direct Yahoo Finance API (Backup method)"""
     try:
-        print(f"🔄 Trying direct Yahoo Finance API for {ticker}...")
+        print(f"🔄 Trying direct Yahoo Finance CSV download for {ticker}...")
         
         # Calculate timestamps
         end_time = int(time.time())
@@ -62,45 +66,57 @@ def fetch_from_yahoo_simple(ticker):
         url = f"https://query1.finance.yahoo.com/v7/finance/download/{ticker}?period1={start_time}&period2={end_time}&interval=1d&events=history"
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         
-        if response.status_code == 200:
+        if response.status_code == 200 and 'Date,Open' in response.text:
             from io import StringIO
             df = pd.read_csv(StringIO(response.text))
             df['Date'] = pd.to_datetime(df['Date'])
             df.set_index('Date', inplace=True)
-            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
             
-            if len(df) > 0:
-                print(f"✓ Data fetched from Yahoo Finance (direct)")
+            # Handle potential 'Adj Close' column
+            if 'Adj Close' in df.columns:
+                df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            
+            if len(df) > 10:
+                print(f"✓ Data fetched from Yahoo Finance CSV ({len(df)} days)")
                 return df, {'longName': ticker, 'symbol': ticker}
+        else:
+            print(f"⚠️ Yahoo CSV: HTTP {response.status_code}")
         return None, None
     except Exception as e:
-        print(f"⚠️ Direct Yahoo error: {e}")
+        print(f"⚠️ Direct Yahoo error: {str(e)[:100]}")
         return None, None
 
 def fetch_from_yfinance(ticker, period='6mo'):
     """Fetch data from yfinance"""
     try:
         print(f"🔄 Trying yfinance for {ticker}...")
-        time.sleep(2)
+        time.sleep(3)  # Increased delay
         stock = yf.Ticker(ticker)
-        data = stock.history(period=period, interval='1d', timeout=15)
+        data = stock.history(period=period, interval='1d', timeout=20, raise_errors=False)
         
-        if not data.empty:
+        if not data.empty and len(data) > 10:
             info = {}
             try:
                 info = stock.info
             except:
                 info = {'longName': ticker, 'symbol': ticker}
-            print(f"✓ Data fetched from yfinance")
+            print(f"✓ Data fetched from yfinance ({len(data)} days)")
             return data, info
         return None, None
     except Exception as e:
-        print(f"⚠️ yfinance error: {e}")
+        error_msg = str(e)
+        if "429" in error_msg or "rate" in error_msg.lower():
+            print(f"⚠️ Yahoo Finance rate limit - trying alternatives...")
+        else:
+            print(f"⚠️ yfinance error: {error_msg[:100]}")
         return None, None
 
 def fetch_stock_data(ticker, period='6mo'):
