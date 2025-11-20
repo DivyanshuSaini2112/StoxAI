@@ -1,0 +1,184 @@
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0A1929;
+    color: #E7EBF0;
+    overflow-x: hidden;
+}
+
+.main-container {
+    background: #0A1929;
+    min-height: 100vh;
+}
+
+.navbar {
+    background: linear-gradient(135deg, #1A2332 0%, #132F4C 100%);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid #1E3A5F;
+    padding: 1.5rem 0;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.navbar-brand {
+    font-size: 1.8rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #0066FF, #00D9FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.navbar-subtitle {
+    font-size: 0.75rem;
+    color: #B2BAC2;
+    font-weight: 400;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-top: 4px;
+}
+
+.section-title::before {
+    content: '';
+    width: 4px;
+    height: 24px;
+    background: linear-gradient(180deg, #0066FF, #00D9FF);
+    border-radius: 2px;
+}
+
+.signal-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.75rem 1.25rem;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 0.5rem;
+    gap: 8px;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.signal-bullish {
+    background: rgba(0, 230, 118, 0.15);
+    color: #00E676;
+    border-color: #00E676;
+}
+
+.signal-bearish {
+    background: rgba(255, 23, 68, 0.15);
+    color: #FF1744;
+    border-color: #FF1744;
+}
+
+.signal-neutral {
+    background: rgba(255, 214, 0, 0.15);
+    color: #FFD600;
+    border-color: #FFD600;
+}
+
+.news-card {
+    background: #132F4C;
+    border: 1px solid #1E3A5F;
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.news-card:hover {
+    border-color: #0066FF;
+    transform: translateX(8px);
+    box-shadow: 0 4px 20px rgba(0, 102, 255, 0.15);
+}
+
+.news-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #E7EBF0;
+    margin-bottom: 0.5rem;
+    line-height: 1.5;
+}
+
+.news-meta {
+    font-size: 0.75rem;
+    color: #B2BAC2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.risk-metric-card {
+    background: #132F4C;
+    border: 1px solid #1E3A5F;
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+}
+
+.risk-metric-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin: 0.5rem 0;
+}
+
+.alert-card {
+    background: #132F4C;
+    border-left: 4px solid #0066FF;
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+}
+
+.comparison-section {
+    padding: 2rem;
+    background: #132F4C;
+}
+
+.ticker-badge {
+    background: #1A2332;
+    color: #B2BAC2;
+    padding: 0.4rem 1rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin: 0.25rem;
+    display: inline-block;
+    border: 1px solid #1E3A5F;
+}
+
+.footer {
+    background: #1A2332;
+    padding: 2rem;
+    text-align: center;
+    color: #B2BAC2;
+    border-top: 1px solid #1E3A5F;
+}
+
+.gradient-text {
+    background: linear-gradient(135deg, #0066FF, #00D9FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+}
+
+@media (max-width: 768px) {
+    .stat-value {
+        font-size: 1.5rem;
+    }
+    
+    .navbar-brand {
+        font-size: 1.4rem;
+    }
+}
