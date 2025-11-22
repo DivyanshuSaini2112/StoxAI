@@ -20,11 +20,11 @@
 
 ## 📋 Overview
 
-**ProStock Analytics** is a professional financial dashboard that provides real-time technical analysis, comprehensive risk metrics, and market intelligence for stocks across global exchanges (NSE, BSE, NYSE, NASDAQ). Built with Python, Dash, and Plotly, it delivers institutional-grade analytics in an intuitive, dark-themed interface.
+**StoxAI** is a professional financial dashboard that provides real-time technical analysis, comprehensive risk metrics, and market intelligence for stocks across global exchanges (NSE, BSE, NYSE, NASDAQ). Built with Python, Dash, and Plotly, it delivers institutional-grade analytics in an intuitive, dark-themed interface.
 
 ```ascii
 ┌───────────────────────────────────────────────────────────┐
-│  ProStock Analytics Pipeline                              │
+│  StoxAI Pipeline                                          │
 ├───────────────────────────────────────────────────────────┤
 │                                                           │
 │  User Input  →  Data Fetch  →  Technical Analysis         │
@@ -86,7 +86,7 @@
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│                    ProStock Core                          │
+│                    StoxAI Core                            │
 ├───────────────────────────────────────────────────────────┤
 │                                                           │
 │  ┌──────────┐      ┌──────────┐      ┌──────────┐         │
@@ -122,7 +122,7 @@
 ### 📁 Project Structure
 
 ```
-ProStock-Analytics/
+StoxAI/
 ├── 📄 app.py                      # Main application entry point
 ├── 📋 requirements.txt            # Python dependencies
 ├── 📄 README.md                   # Documentation
@@ -167,10 +167,10 @@ ProStock-Analytics/
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/prostock-analytics.git
+git clone https://github.com/yourusername/StoxAI.git
 
 # Navigate to directory
-cd prostock-analytics
+cd StoxAI
 
 # Install dependencies
 pip install -r requirements.txt
