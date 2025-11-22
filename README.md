@@ -1,6 +1,6 @@
 <div align="center">
 
-# ProStock Analytics
+# StoxAI
 
 ### 📈 Professional-Grade Financial Dashboard & Technical Analysis Platform
 
